@@ -499,7 +499,10 @@ uintptr_t runtime_services_resolve(const char *name) {
     if (online) {
         const char *symbol=runtime_symbol(name);
         if (symbol && online_symbol(symbol)) {
-            uintptr_t address=bbgpu_resolve(name);
+            /* BB_ONLINE_BACKEND=hd: the Hunter's Dream backend answers the PSN calls it has
+             * (by name); the sockets and sceHttp stay with the libraries below. */
+            uintptr_t address=bbnet_hd_resolve(symbol);
+            if (!address) address=bbgpu_resolve(name);
             if (address) return address;
             printf("Co-op: %s has no online version; using the offline one\n",symbol);
         }

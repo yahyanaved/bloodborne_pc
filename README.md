@@ -78,6 +78,16 @@ Everyone you want to play with needs game version 1.09 and the same co-op server
 shadNet server (from the [shadp2p](https://github.com/Wozzardman/shadp2p) project) works too:
 put its address in **Server address**.
 
+### With bbhost players (experimental)
+
+**Online co-op → Play with: The Hunter's Dream (bbhost players)** uses The Hunter's Dream's own
+co-op service instead of shadNet, the way [bbhost](https://github.com/droogie/bbhost) does, so
+this port and bbhost meet in the same rooms. There is no password: link this PC to an account
+under **The Hunter's Dream account** (with Discord, or an account made on this PC with a
+recovery code). Cheats, gameplay tweaks, mods and extra patches are announced to the server,
+which keeps such sessions apart from unmodified ones. Details:
+[docs/ONLINE_HUNTERS_DREAM.md](docs/ONLINE_HUNTERS_DREAM.md).
+
 ## Known issues
 
 - Some AMD graphics cards may still crash when the game world loads; please send
@@ -110,7 +120,9 @@ renderer. The original README is in [docs/original-readme](docs/original-readme/
 Online play uses the network and PSN code of [shadp2p](https://github.com/Wozzardman/shadp2p)
 by Wozzardman (the shadPS4 Bloodborne co-op project), the shadNet server of the
 [shadPS4](https://shadps4.net) team, and [The Hunter's Dream](https://thehuntersdream.com) server
-by droogie and its team.
+by droogie and its team. The co-op service of The Hunter's Dream (`gpu/bbnet/hd`) is a port of
+the online implementation of [bbhost](https://github.com/droogie/bbhost) by droogie and its
+contributors.
 
 Also used: [FSR-Vulkan](https://github.com/FireBurn/FSR-Vulkan) and the AMD FidelityFX SDK
 (FSR), FSR 4 assets from [FireBurn/Q2RTX](https://github.com/FireBurn/Q2RTX), the DLSS bridge
@@ -135,3 +147,7 @@ artwork.
 
 GNU GPL v2 or later ([LICENSE](LICENSE)). Third-party components keep their own licenses
 (see `licenses\` in the download).
+
+The files ported from bbhost (`gpu/bbnet/hd/`, `launcher/bbport_hd.py`, `tests/test_hd_stun.cpp`)
+are GPL v3 or later, as bbhost is. A build that includes them is distributed under the GNU GPL
+v3 or later as a whole.

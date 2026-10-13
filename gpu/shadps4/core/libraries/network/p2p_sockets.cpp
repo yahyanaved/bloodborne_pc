@@ -25,6 +25,8 @@
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/network/net_upnp.h"
 #include "core/libraries/network/net_util.h"
+#include "hd/hd.h"
+#include "hd/hd_p2p.h"
 #include "net.h"
 #include "net_error.h"
 
@@ -178,6 +180,23 @@ public:
             return true;
         }
 
+        if (Hd::Enabled()) {
+            // bbport co-op, the Hunter's Dream backend: bbnet/hd/hd_p2p.cpp owns the UDP port
+            // and bbhost's wire on it (the PS4 vport header, STUN, probes, the relay); this
+            // class only routes its datagrams to the game's sockets by vport.
+            if (!Hd::P2pOpen()) {
+                LOG_ERROR(Lib_Net, "P2P transport: the Hunter's Dream P2P port did not open");
+                return false;
+            }
+            Hd::P2pSetDeliver(&P2PTransport::HdDeliver);
+            physical_port = Hd::P2pBoundPort();
+            hd_wire = true;
+            running.store(true, std::memory_order_release);
+            LOG_INFO(Lib_Net, "P2P transport ready: UDP physical_port={} (bbhost wire)",
+                     physical_port);
+            return true;
+        }
+
         host_socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (!IsValidSocket(host_socket)) {
             LOG_ERROR(Lib_Net, "P2P transport socket() failed error={}", LastSocketError());
@@ -247,6 +266,10 @@ public:
             return;
         }
 
+        if (hd_wire) {
+            Hd::P2pSetDeliver(nullptr);
+            hd_wire = false;
+        }
         if (receive_thread.joinable()) {
             receive_thread.join();
         }
@@ -310,6 +333,14 @@ public:
 #if !defined(__linux__) && !defined(_WIN32)
         return -1;
 #else
+        if (Hd::Enabled()) {
+            if (!Start() || (data == nullptr && len != 0) || len > kMaxP2PPayload ||
+                dest_addr_nbo == 0 || dest_port_nbo == 0) {
+                return -1;
+            }
+            return Hd::P2pSend(ntohs(source_vport_nbo), ntohs(dest_vport_nbo), data, len,
+                               dest_addr_nbo, dest_port_nbo);
+        }
         if (!Start() || !IsValidSocket(host_socket) || (data == nullptr && len != 0) ||
             len > kMaxP2PPayload || dest_addr_nbo == 0 || dest_port_nbo == 0) {
             return -1;
@@ -352,6 +383,10 @@ public:
     }
 
     int SendInternal(const void* data, u32 len, u32 dest_addr_nbo, u16 dest_port_nbo) {
+        // The shadNet signaling channel is not part of bbhost's wire.
+        if (Hd::Enabled()) {
+            return -1;
+        }
         // To the shadNet server: once in each server's framing, as which one it is is not known
         // (it answers only its own, and the reply is taken in either).
         if (dest_addr_nbo != 0 && dest_addr_nbo == server_addr.load(std::memory_order_relaxed) &&
@@ -393,6 +428,44 @@ public:
 
 private:
     P2PTransport() = default;
+
+    // The Hunter's Dream backend's reader thread: a datagram of the game's, header taken off.
+    static void HdDeliver(const Hd::P2pDatagram& datagram) {
+        Instance().RouteHdDatagram(datagram);
+    }
+
+    void RouteHdDatagram(const Hd::P2pDatagram& datagram) {
+        std::lock_guard lock(registry_mutex);
+        P2PSocket* target = nullptr;
+        if (datagram.has_header) {
+            const auto it = game_sockets.find(htons(datagram.dst_vport));
+            if (it != game_sockets.end()) {
+                target = it->second;
+            }
+        }
+        if (target == nullptr) {
+            // No socket on that vport (or no header): the first bound vport takes it, as
+            // bbhost forwards a peer's vport 30 to the game's 40.
+            u16 lowest = 0;
+            for (const auto& [vport_nbo, candidate] : game_sockets) {
+                const u16 vport = ntohs(vport_nbo);
+                if (candidate != nullptr && (target == nullptr || vport < lowest)) {
+                    target = candidate;
+                    lowest = vport;
+                }
+            }
+        }
+        if (target == nullptr) {
+            return;
+        }
+
+        P2PDatagram packet{};
+        packet.source_addr = datagram.addr;
+        packet.source_port = datagram.port;
+        packet.source_vport = htons(datagram.src_vport);
+        packet.payload.assign(datagram.data, datagram.data + datagram.size);
+        target->EnqueuePacket(std::move(packet));
+    }
 
     void SendServerFrame(const void* data, u32 len, u32 dest_addr_nbo, u16 dest_port_nbo) {
 #if defined(__linux__) || defined(_WIN32)
@@ -539,6 +612,7 @@ private:
 
     net_socket host_socket{kInvalidSocket};
     u16 physical_port{0};
+    bool hd_wire{false}; // the port and its wire are bbnet/hd's
     std::atomic<u32> server_addr{0};
     std::atomic<u16> server_port{0};
 

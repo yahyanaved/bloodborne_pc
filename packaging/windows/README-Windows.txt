@@ -46,6 +46,11 @@ Online play (beta)
 - Messages, bloodstains and ghosts come from The Hunter's Dream (https://thehuntersdream.com);
   bells and summons go through the shadNet server. Everyone needs game version 1.09 and the
   same co-op server. Summoning between players is not confirmed yet.
+- With bbhost players (experimental): "Online co-op" -> "Play with: The Hunter's Dream (bbhost
+  players)" uses The Hunter's Dream's own co-op service instead of shadNet. No password: link
+  this PC to an account there under "The Hunter's Dream account". Cheats, tweaks, mods and
+  extra patches are announced to the server, which keeps such sessions apart from unmodified
+  ones; cheating against other players gets an account banned there.
 
 Cheats
 - The "Cheats" page has cheats (never die, enemies do not see or hear you, Rally never fades,
@@ -75,6 +80,9 @@ Mods and patches
 Credits
 - Online play: shadp2p by Wozzardman (https://github.com/Wozzardman/shadp2p), shadNet by the
   shadPS4 team, The Hunter's Dream by droogie.
+  The co-op service of The Hunter's Dream is a port of bbhost's online implementation
+  (https://github.com/droogie/bbhost, GPL v3 or later), so this package as a whole is
+  distributed under the GNU GPL v3 or later.
 - bbport (the Linux port this is built on): https://github.com/deadinside28/bloodborne_pc
 - Windows port: https://github.com/Supermedo/bloodborne_pc
 - The full list of projects and patch authors is in README.md (Credits and licenses).

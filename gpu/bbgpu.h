@@ -18,6 +18,12 @@ typedef struct {
 void bbgpu_register_kernel(void);
 /* Co-op: the game folder and param.sfo identity for the network and PSN libraries. */
 void bbnet_configure(const char *app0, const char *serial, const char *title, const char *app_ver);
+/* Co-op, the Hunter's Dream backend (bbnet/hd, BB_ONLINE_BACKEND=hd): 1 when it is on; its
+ * function for an imported symbol's name ("sceNpMatching2JoinRoom"), or 0; and the loaded
+ * game image, given once before the game starts and while it is still writable. */
+int bbnet_hd_enabled(void);
+uintptr_t bbnet_hd_resolve(const char *symbol);
+void bbnet_hd_set_image(void *image, uint64_t size);
 /* Creates window, Vulkan device, presenter and GPU command processor. */
 int bbgpu_init(const BbGpuConfig *config);
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */

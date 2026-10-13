@@ -448,7 +448,9 @@ extern "C" void bbnet_configure(const char* app0, const char* serial, const char
     const auto& ids = Common::ElfInfo::Instance().GetNpCommIds();
     std::printf("Co-op: %s, NP communication id %s%s\n", serial ? serial : "?",
                 ids.empty() ? "missing" : ids.front().c_str(),
-                EmulatorSettings.IsShadNetEnabled() ? "; online play on" : "");
+                EmulatorSettings.IsHuntersDreamBackend() && EmulatorSettings.IsConnectedToNetwork()
+                    ? "; online play on (The Hunter's Dream, bbhost protocol)"
+                    : EmulatorSettings.IsShadNetEnabled() ? "; online play on (shadNet)" : "");
 }
 
 // ---- Registration ------------------------------------------------------------------------------

@@ -124,6 +124,7 @@ def run_command():
 # languages are in bbport_lang.py, keyed by the English text.
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bbport_hd  # noqa: E402
 import bbport_lang  # noqa: E402
 
 LANG = 'en'
@@ -197,7 +198,12 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'
                 'vk_validation': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True, 'online': False, 'online_server': 'srv.shadps4.net:31313',
                 'online_webapi': '', 'online_npid': '', 'online_password': '', 'online_upnp': True,
-                'online_community': COMMUNITY_SERVER}
+                'online_community': COMMUNITY_SERVER,
+                # Bells and summons: 'shadnet' (a shadNet server) or 'hd' (The Hunter's Dream's own
+                # session service, with bbhost's players); the account of the latter (bbport_hd.py).
+                'online_backend': 'shadnet', 'hd_account_name': '', 'hd_account_token': ''}
+ONLINE_BACKENDS = [('shadnet', ('shadNet server (shadPS4 players and this port)',)),
+                   ('hd', ("The Hunter's Dream (bbhost players)",))]
 
 UPSCALERS = [('dlss', ('DLSS (NVIDIA GeForce RTX)',)),
              ('fsr4', ('FSR 4 (best quality)', 'FSR 4 (лучшее качество)')),
@@ -337,7 +343,8 @@ def server_check(server, webapi, community):
     import socket
     lines = []
     try:
-        with urllib.request.urlopen(community + ':20443/bb-eu/ss.info', timeout=6) as reply:
+        with urllib.request.urlopen(community + ':20443/bb-eu/ss.info', timeout=6,
+                                    context=bbport_hd.trust_context()) as reply:
             reply.read(64)
         lines.append(_('Game server {0}: reachable').format(community))
     except (OSError, ValueError) as error:
@@ -389,7 +396,13 @@ def game_environment(s):
         if '=' in item:
             key, value = item.split('=', 1)
             env[key] = value
-    if s.get('online'):
+    if s.get('online') and s.get('online_backend') == 'hd':
+        # The Hunter's Dream's own session service (gpu/bbnet/hd): no shadNet account is sent.
+        env['BB_ONLINE'] = '1'
+        bbport_hd.game_environment(env, community_address(s['online_community']),
+                                   str(s.get('hd_account_name', '')).strip(),
+                                   str(s.get('hd_account_token', '')))
+    elif s.get('online'):
         server = str(s['online_server']).strip() or APP_DEFAULTS['online_server']
         env['BB_ONLINE'] = '1'
         env['BB_SHADNET_SERVER'] = server
@@ -921,6 +934,12 @@ class Launcher:
         community = self.var('online_community', 'app')
         self.row(f, _('Game server'), ttk.Entry(f, textvariable=community, width=40),
                  _('The Hunter\'s Dream by default. Only the name is needed; the game picks the ports.'))
+        self.section(f, _('Co-op service (bells and summons)'))
+        self.row(f, _('Play with'), self.choice(f, 'online_backend', 'app', ONLINE_BACKENDS),
+                 _("shadNet: the server below, with shadPS4 players and other players of this port. "
+                   "The Hunter's Dream: the game server's own co-op service, with bbhost players "
+                   '(experimental here). The two do not meet: everyone in a session picks the same one.'))
+        self.build_online_hd(f)
         self.section(f, _('Co-op server (bells and summons)'))
         server = self.var('online_server', 'app')
         self.row(f, _('Server address'), ttk.Entry(f, textvariable=server, width=40),
@@ -946,12 +965,28 @@ class Launcher:
             address = values['online_server'].strip() or APP_DEFAULTS['online_server']
             webapi, game = webapi_setting(values), community_address(values['online_community'])
             online_on = self.var('online', 'app').get()
+            hd = self.var('online_backend', 'app').get() == 'hd'
+            signed_in = bool(self.var('hd_account_name', 'app').get().strip()
+                             and self.var('hd_account_token', 'app').get())
             result.configure(text=_('Checking…'))
 
             def work():
-                text = server_check(address, webapi, game)
-                if values['online_webapi'].strip() and values['online_webapi'].strip() != webapi:
-                    text += '\n' + _('The WebAPI box holds the game server address; it is ignored.')
+                if hd:
+                    lines = []
+                    for kind, where, error in bbport_hd.server_check(game):
+                        if kind == 'game':
+                            lines.append(_('Game server {0}: not reachable ({1})').format(where, error) if error
+                                         else _('Game server {0}: reachable').format(where))
+                        else:
+                            lines.append(_('Server {0}: not reachable ({1})').format(where, error) if error
+                                         else _('Server {0}: reachable').format(where))
+                    if not signed_in:
+                        lines.append(_("No Hunter's Dream account is linked: the game starts offline."))
+                    text = '\n'.join(lines)
+                else:
+                    text = server_check(address, webapi, game)
+                    if values['online_webapi'].strip() and values['online_webapi'].strip() != webapi:
+                        text += '\n' + _('The WebAPI box holds the game server address; it is ignored.')
                 if not online_on:
                     text += '\n' + _('"Play online" is off: the game starts offline.')
                 self.ui_calls.put(lambda: result.configure(text=text))
@@ -960,6 +995,208 @@ class Launcher:
         result.grid(row=self.next_row(f), column=1, sticky='w', pady=(6, 0))
         self.note(f, _('Everyone in a session needs the same game version (1.09) and the same server. '
                        'Cheats change the game for the other players too: turn them off when you play together.'))
+
+    # ---- The Hunter's Dream account (bbport_hd.py: bbhost's account calls) ---------------------
+    def build_online_hd(self, f):
+        ttk = self.ttk
+        self.section(f, _("The Hunter's Dream account"))
+        for key in ('hd_account_name', 'hd_account_token'):  # kept with the settings (collect)
+            self.var(key, 'app')
+        self.hd_status = ttk.Label(f, text=self.hd_status_text())
+        self.row(f, _('Account'), self.hd_status,
+                 _('Your online name with bbhost players. There is no password: this PC is linked to an '
+                   'account, and the link is saved with the other launcher settings.'))
+        buttons = ttk.Frame(f)
+        for title, command in ((_('Link with Discord…'), self.hd_link),
+                               (_('New account on this PC…'), self.hd_create),
+                               (_('Recover…'), self.hd_recover),
+                               (_('Website code'), self.hd_web_code),
+                               (_('Sign out'), self.hd_sign_out)):
+            ttk.Button(buttons, text=title, command=command).pack(side='left', padx=(0, 6))
+        self.row(f, '', buttons,
+                 _('Cheats, gameplay tweaks, mods and extra patches are announced to the server, which keeps '
+                   'such sessions apart from unmodified ones. Cheating against other players gets an '
+                   'account banned there.'))
+
+    def hd_base(self):
+        return bbport_hd.auth_server(community_address(self.var('online_community', 'app').get()))
+
+    def hd_status_text(self):
+        name = self.var('hd_account_name', 'app').get().strip()
+        if name and self.var('hd_account_token', 'app').get():
+            return _('Signed in as {0}').format(name)
+        return _('Not signed in')
+
+    def hd_set_account(self, account):
+        """Keeps the account (or none) with the settings at once: a token that is lost needs the
+        recovery code."""
+        self.var('hd_account_name', 'app').set(account['name'] if account else '')
+        self.var('hd_account_token', 'app').set(account['token'] if account else '')
+        self.collect()
+        self.hd_status.configure(text=self.hd_status_text())
+
+    def hd_run(self, work, done):
+        """work() off the Tk thread, then done(result) on it; a refusal is shown as it is."""
+        def task():
+            try:
+                result = work()
+            except bbport_hd.AccountError as error:
+                self.ui_calls.put(lambda message=str(error): self.messagebox.showerror(
+                    "The Hunter's Dream", message))
+                return
+            self.ui_calls.put(lambda: done(result))
+        threading.Thread(target=task, daemon=True).start()
+
+    def hd_ask(self, prompt):
+        from tkinter import simpledialog
+        value = simpledialog.askstring("The Hunter's Dream", prompt, parent=self.root)
+        return value.strip() if value else ''
+
+    def hd_show_code(self, heading, code, note):
+        """A code the player has to copy: shown in a box it can be selected and copied from."""
+        tk, ttk = self.tk, self.ttk
+        window = tk.Toplevel(self.root)
+        window.title("The Hunter's Dream")
+        window.configure(bg=PANEL, padx=self.px(18), pady=self.px(14))
+        window.transient(self.root)
+        ttk.Label(window, text=heading, wraplength=self.px(440), justify='left').pack(anchor='w')
+        box = ttk.Entry(window, width=40, font=('Consolas', 14), justify='center')
+        box.insert(0, code)
+        box.configure(state='readonly')
+        box.pack(pady=(10, 6))
+        if note:
+            ttk.Label(window, text=note, style='Muted.TLabel', wraplength=self.px(440),
+                      justify='left').pack(anchor='w')
+        buttons = ttk.Frame(window)
+        buttons.pack(pady=(12, 0))
+
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code)
+        ttk.Button(buttons, text=_('Copy'), command=copy).pack(side='left', padx=(0, 6))
+        ttk.Button(buttons, text=_('Close'), command=window.destroy).pack(side='left')
+
+    def hd_link(self):
+        """Links this PC to an account on the website: a code to approve there, then the token."""
+        base = self.hd_base()
+
+        def started(link):
+            tk, ttk = self.tk, self.ttk
+            page = bbport_hd.safe_link_page(link['verification_uri'], base)
+            window = tk.Toplevel(self.root)
+            window.title("The Hunter's Dream")
+            window.configure(bg=PANEL, padx=self.px(18), pady=self.px(14))
+            window.transient(self.root)
+            ttk.Label(window, text=_('Approve this PC on the website, signed in with Discord, with this code:'),
+                      wraplength=self.px(440), justify='left').pack(anchor='w')
+            ttk.Label(window, text=link['user_code'], style='Section.TLabel',
+                      font=('Consolas', 22)).pack(pady=(10, 6))
+            address = ttk.Entry(window, width=52)
+            address.insert(0, page or link['verification_uri'])
+            address.configure(state='readonly')
+            address.pack()
+            status = ttk.Label(window, text=_('Waiting for the approval…'), style='Muted.TLabel')
+            status.pack(pady=(8, 0))
+            buttons = ttk.Frame(window)
+            buttons.pack(pady=(12, 0))
+            state = {'open': True}
+
+            def close():
+                state['open'] = False
+                window.destroy()
+            if page:
+                ttk.Button(buttons, text=_('Open the page'),
+                           command=lambda: webbrowser.open(page)).pack(side='left', padx=(0, 6))
+            ttk.Button(buttons, text=_('Cancel'), command=close).pack(side='left')
+            window.protocol('WM_DELETE_WINDOW', close)
+
+            def finish(account, message):
+                if not state['open']:
+                    return
+                close()
+                if account:
+                    self.hd_set_account(account)
+                    self.messagebox.showinfo("The Hunter's Dream",
+                                             _('This PC is linked: signed in as {0}.').format(account['name']))
+                else:
+                    self.messagebox.showerror("The Hunter's Dream", message)
+
+            def poll():
+                deadline = time.monotonic() + max(30, link['expires_in'])
+                interval = link['interval']
+                while state['open'] and time.monotonic() < deadline:
+                    time.sleep(interval)
+                    if not state['open']:
+                        return
+                    try:
+                        result, account = bbport_hd.link_poll(base, link)
+                    except bbport_hd.AccountError as error:
+                        self.ui_calls.put(lambda message=str(error): finish(None, message))
+                        return
+                    if result == 'approved':
+                        self.ui_calls.put(lambda: finish(account, None))
+                        return
+                    if result == 'slow_down':
+                        interval += 5
+                    elif result == 'denied':
+                        self.ui_calls.put(lambda: finish(None, _('The link was refused on the website.')))
+                        return
+                    elif result != 'pending':
+                        break
+                self.ui_calls.put(lambda: finish(None, _('The code has expired. Start the link again.')))
+            threading.Thread(target=poll, daemon=True).start()
+        self.hd_run(lambda: bbport_hd.link_start(base), started)
+
+    def hd_create(self):
+        name = self.hd_ask(_('Name of the new account (your online name):'))
+        if not name:
+            return
+        base = self.hd_base()
+
+        def done(result):
+            account, code = result
+            self.hd_set_account(account)
+            self.hd_show_code(_('Signed in as {0}. This is the recovery code of the account:').format(account['name']),
+                              code, _('Write it down now. It is shown once and is the only way back into the '
+                                      "account if this PC's settings are lost."))
+        self.hd_run(lambda: bbport_hd.create(base, name), done)
+
+    def hd_recover(self):
+        name = self.hd_ask(_('Name of the account:'))
+        code = self.hd_ask(_('Recovery code of the account:')) if name else ''
+        if not name or not code:
+            return
+        base = self.hd_base()
+
+        def done(result):
+            account, new_code = result
+            self.hd_set_account(account)
+            self.hd_show_code(_('Signed in as {0}. The account has a new recovery code:').format(account['name']),
+                              new_code, _('Write it down now: the old one no longer works, and every other PC of '
+                                          'the account was signed out.'))
+        self.hd_run(lambda: bbport_hd.recover(base, name, code), done)
+
+    def hd_web_code(self):
+        token = self.var('hd_account_token', 'app').get()
+        if not token:
+            self.messagebox.showinfo("The Hunter's Dream", _('Not signed in'))
+            return
+        base = self.hd_base()
+        self.hd_run(lambda: bbport_hd.web_code(base, token),
+                    lambda code: self.hd_show_code(_("A one-time code to sign in on the website with this PC's account:"),
+                                                   code, ''))
+
+    def hd_sign_out(self):
+        token = self.var('hd_account_token', 'app').get()
+        if not token:
+            return
+        if not self.messagebox.askyesno("The Hunter's Dream", _(
+                'Sign this PC out of the account?\n\nAn account made on this PC can only be reached again '
+                'with its recovery code.')):
+            return
+        base = self.hd_base()
+        self.hd_set_account(None)
+        threading.Thread(target=lambda: bbport_hd.logout(base, token), daemon=True).start()
 
     def build_mods(self):
         f = self.scrolled_page('mods', _('Mods & patches', 'Моды и патчи'),
@@ -1246,14 +1483,22 @@ class Launcher:
         if self.process:
             return
         online, npid = self.var('online', 'app'), self.var('online_npid', 'app')
-        if not online.get() and npid.get().strip():
+        hd = self.var('online_backend', 'app').get() == 'hd'
+        if hd and online.get() and not (self.var('hd_account_name', 'app').get().strip()
+                                        and self.var('hd_account_token', 'app').get()):
+            if not self.messagebox.askyesno(
+                    'Bloodborne', _("No Hunter's Dream account is linked, so the game would start offline.\n\n"
+                                    'Yes: play offline.   No: link an account first.')):
+                self.show('online')
+                return
+        if not hd and not online.get() and npid.get().strip():
             choice = self.messagebox.askyesnocancel(
                 'Bloodborne', _('An online account is filled in, but "Play online" is off.\n\n'
                                 'Yes: play online.   No: play offline.'))
             if choice is None:
                 return
             online.set(bool(choice))
-        if online.get() and '@' in npid.get():
+        if not hd and online.get() and '@' in npid.get():
             self.messagebox.showwarning(
                 'Bloodborne', _('The Online ID is the account name (NPID) you registered on the server, '
                                 'not your email address.'))

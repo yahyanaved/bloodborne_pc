@@ -43,6 +43,56 @@ def summon_service(webapi):
         return False
 
 
+HD_BACKENDS = ('hd', 'huntersdream', 'bbhost')
+# The game uploads its play logs to FromSoftware's S3 buckets (PUT /<date>/<file>). bbhost sends
+# them to the private server's API port, which stores them for its map and profiles.
+PLAYLOG_HOSTS = ('bb-playlog-prod.s3.amazonaws.com', 'bb-playlog-test.s3.amazonaws.com')
+# Settings that change only what this player sees, not how the game plays.
+COSMETIC_TWEAKS = {'tweak_camera_distance', 'tweak_no_camera_rotation'}
+# bbhost's own "old-hunters" patch (its patches/old-hunters.toml, on by default there): the game
+# takes itself for the edition that includes The Old Hunters. bbhost announces no change of
+# rules for it, so the same single write announces none here, whatever file it comes from:
+# otherwise a player with it would be kept apart from every bbhost player.
+OLD_HUNTERS_WRITE = (0x023b6d20, bytes.fromhex('b801000000'))
+
+
+def changes_rules(meta):
+    """Whether an external patch (its Metadata element) is a change of rules for the server:
+    every one but the Old Hunters patch."""
+    from patches import encode
+    try:
+        writes = [(int(line.get('Address') or '', 0), encode(line)) for line in meta.iter('Line')]
+    except (TypeError, ValueError):
+        return True
+    return writes != [OLD_HUNTERS_WRITE]
+
+
+def hd_backend(env):
+    """True when The Hunter's Dream's own co-op service is chosen (gpu/bbnet/hd, bbhost's)."""
+    return env.get('BB_ONLINE_BACKEND', '') in HD_BACKENDS
+
+
+def online_ruleset(settings, mods_active, extra_patches):
+    """What this session plays by, as bbhost's X-BBHost-Ruleset header says it: "vanilla", or the
+    kinds of gameplay change that are on. The private server keeps the messages, bloodstains,
+    signs and statistics of such sessions apart from unmodified ones, so cheats here do not
+    reach players who did not ask for them. settings: bbport.ini as the patches see it."""
+    from patches import EFFECTS
+    on = {key for key, (_off, name) in EFFECTS.items() if name and settings.get(key) == '1'}
+    parts = set()
+    if any(key.startswith('cheat_') for key in on):
+        parts.add('bbpc-cheats')
+    if any(key.startswith('tweak_') and key not in COSMETIC_TWEAKS for key in on):
+        parts.add('bbpc-tweaks')
+    if on & {'debug_menu', 'debug_camera'}:
+        parts.add('bbpc-debug')
+    if mods_active:
+        parts.add('bbpc-mods')
+    if extra_patches:
+        parts.add('bbpc-patches')
+    return ','.join(sorted(parts)) or 'vanilla'
+
+
 def online_overrides(env, user_dir):
     """Writes user/host_overrides.json for this launch. A player who needs other addresses
     puts them in user/host_overrides.custom.json, which is then used as it is."""
@@ -58,7 +108,12 @@ def online_overrides(env, user_dir):
         # WebAPI when that server has the Bloodborne summon service (the shadp2p server),
         # otherwise they stay with the community server.
         overrides = {GAME_SERVER: community}
-        if summon_service(webapi):
+        if hd_backend(env):
+            # The Hunter's Dream's own co-op service: summon signs stay with the community
+            # server, and the play logs go to its API port instead of Amazon.
+            overrides.update({name: f'{community}:{COMMUNITY_API_PORT}' for name in PLAYLOG_HOSTS})
+            print(f'Co-op: bells and summons through {community} (bbhost protocol)')
+        elif summon_service(webapi):
             overrides.update({f'{scheme}://{host}:{COMMUNITY_API_PORT}/summon_messenger': webapi
                               for scheme in ('https', 'http')})
             print(f'Co-op: summon signs through {webapi}')
@@ -227,8 +282,25 @@ def main():
         user_dir = Path(env.get('BB_USER_DIR', data / 'user')).resolve()
         user_dir.mkdir(parents=True, exist_ok=True)
         env.setdefault('BB_GPU_USER_DIR', str(user_dir))
+        # The addresses the Hunter's Dream backend reads from the game are the 01.09 eboot's.
+        if patched and not forced and version == '01.09':
+            env['BB_EBOOT_109'] = '1'
+        else:
+            env.pop('BB_EBOOT_109', None)
         if env.get('BB_ONLINE') == '1':
             online_overrides(env, user_dir)
+            if hd_backend(env):
+                from patches import external_patches, external_selection, read_settings
+                chosen = []
+                if patched:
+                    patches_dir = Path(env.get('BB_PATCHES_DIR', data / 'patches'))
+                    chosen = external_selection(external_patches(patches_dir),
+                                                env.get('BB_PATCHES_CONFIG', data / 'patches.json'))
+                    chosen = [patch for patch in chosen if changes_rules(patch[2])]
+                env['BB_HD_RULESET'] = online_ruleset(
+                    read_settings(Path(config)) if patched else {}, mod_view is not None,
+                    bool(chosen) or bool(patched and env.get('BB_PATCHES', '').strip()))
+                print(f'Co-op: this session plays by "{env["BB_HD_RULESET"]}" rules')
         this = ['--run'] if getattr(sys, 'frozen', False) else [str(Path(__file__).resolve())]
         restart = [sys.executable, *this, '--after', str(os.getpid()), *args]
         env['BB_RESTART_COMMAND'] = subprocess.list2cmdline(restart)

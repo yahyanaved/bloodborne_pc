@@ -78,7 +78,18 @@ public:
         return v && v[0] ? v : fallback;
     }
     bool IsConnectedToNetwork() { static const auto value = Flag("BB_ONLINE", false); return value; }
-    bool IsShadNetEnabled() { return IsConnectedToNetwork() && !shadnet_session_disabled.load(); }
+    // BB_ONLINE_BACKEND=hd: the Hunter's Dream backend (bbnet/hd, bbhost's online) answers the
+    // PSN calls itself, so the shadNet client and everything that waits on it stay off.
+    bool IsHuntersDreamBackend() {
+        static const auto value = [] {
+            const std::string backend = Text("BB_ONLINE_BACKEND", "");
+            return backend == "hd" || backend == "huntersdream" || backend == "bbhost";
+        }();
+        return value;
+    }
+    bool IsShadNetEnabled() {
+        return IsConnectedToNetwork() && !IsHuntersDreamBackend() && !shadnet_session_disabled.load();
+    }
     void SetShadNetSessionDisabled(bool v) { shadnet_session_disabled.store(v); }
     std::string GetShadNetServer() { return Text("BB_SHADNET_SERVER", "127.0.0.1:31313"); }
     std::string GetShadNetWebApiServer() { return Text("BB_SHADNET_WEBAPI", "http://127.0.0.1:31315"); }

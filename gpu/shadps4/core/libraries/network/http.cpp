@@ -31,6 +31,7 @@
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/network/http.h"
+#include "hd/hd.h"
 #include "http_error.h"
 
 #if __has_include(<httplib.h>)
@@ -955,7 +956,26 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
             (plan.scheme == "http" && plan.port != 80)) {
             base_url += ":" + std::to_string(plan.port);
         }
-        httplib::Client cli(base_url);
+        // bbport: the client for the scheme itself, not httplib::Client, which picks one from
+        // the address: only the TLS client's own load_ca_cert_store keeps the library from
+        // adding the system's certificates as they are (below).
+        std::string connect_host = plan.host;
+        if (connect_host.size() > 2 && connect_host.front() == '[' && connect_host.back() == ']') {
+            connect_host = connect_host.substr(1, connect_host.size() - 2); // an IPv6 literal
+        }
+        std::unique_ptr<httplib::ClientImpl> client;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        httplib::SSLClient* tls_client = nullptr;
+        if (plan.scheme == "https") {
+            auto owned = std::make_unique<httplib::SSLClient>(connect_host, plan.port);
+            tls_client = owned.get();
+            client = std::move(owned);
+        }
+#endif
+        if (!client) {
+            client = std::make_unique<httplib::ClientImpl>(connect_host, plan.port);
+        }
+        httplib::ClientImpl& cli = *client;
         cli.set_connection_timeout(pick_timeout_seconds(plan.settings.connect_timeout_us, 30));
         cli.set_read_timeout(pick_timeout_seconds(plan.settings.recv_timeout_us, 120));
         cli.set_write_timeout(pick_timeout_seconds(plan.settings.send_timeout_us, 120));
@@ -980,6 +1000,16 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
                          plan.scheme, plan.host);
             }
             cli.enable_server_certificate_verification(verify_server);
+            // bbport: this PC's trust without its entries that are not valid today
+            // (bbnet/hd/hd_http.cpp). OpenSSL prefers a certificate of its store to the one
+            // the server sends, so an expired copy of an intermediate in the Windows store
+            // otherwise fails a server whose own chain is valid, and the game says it could
+            // not acquire the server's information.
+            if (verify_server && tls_client) {
+                if (const std::string& pem = Hd::TrustedCaPem(); !pem.empty()) {
+                    tls_client->load_ca_cert_store(pem.data(), pem.size());
+                }
+            }
             if (game_disabled_verify) {
                 LOG_INFO(Lib_Http, "{}://{}: server cert verification disabled (ssl_flags={:#x})",
                          plan.scheme, plan.host, plan.settings.ssl_flags);
@@ -1002,6 +1032,12 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
             if (!already_set) {
                 headers.emplace("Accept-Encoding", "gzip");
             }
+        }
+        // bbport co-op, the Hunter's Dream backend: the game's own requests to the private
+        // server carry the account's token and the rules the session plays by (bbnet/hd).
+        for (const auto& [k, v] : Hd::GameRequestHeaders(plan.host)) {
+            headers.erase(k);
+            headers.emplace(k, v);
         }
 
         const char* body_ptr =

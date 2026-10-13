@@ -172,9 +172,13 @@ file(GLOB_RECURSE BBNET_SOURCES CONFIGURE_DEPENDS shadps4/core/libraries/network
 list(FILTER BBNET_SOURCES EXCLUDE REGEX
     "np_trophy|trophy_ui|np_sns_facebook_dialog|np_profile_dialog/|np_commerce/")
 find_package(nlohmann_json CONFIG REQUIRED)
-add_library(bbnet STATIC ${BBNET_SOURCES} "${SHADNET_PROTO_OUT}/shadnet.pb.cc" bbnet/bbnet_glue.cpp)
+# The Hunter's Dream backend (bbnet/hd): bbhost's online implementation
+# (github.com/droogie/bbhost, GPL-3.0-or-later), chosen at start with BB_ONLINE_BACKEND=hd.
+file(GLOB BBNET_HD_SOURCES CONFIGURE_DEPENDS bbnet/hd/*.cpp)
+add_library(bbnet STATIC ${BBNET_SOURCES} "${SHADNET_PROTO_OUT}/shadnet.pb.cc" bbnet/bbnet_glue.cpp
+    ${BBNET_HD_SOURCES})
 target_include_directories(bbnet PRIVATE shim shadps4 shadps4/shadnet "${SHADNET_PROTO_OUT}"
-    third_party/imgui third_party/httplib)
+    third_party/imgui third_party/httplib bbnet)
 target_link_libraries(bbnet PRIVATE nlohmann_json::nlohmann_json)
 # HTTPS (the community game server only speaks TLS) and gzip replies in cpp-httplib.
 find_package(OpenSSL REQUIRED)
@@ -259,6 +263,22 @@ if (WIN32)
 endif()
 
 # Explicit test targets; neither launches the game nor needs a Vulkan device.
+# The Hunter's Dream backend's STUN exchange (bbnet/hd/hd_stun.cpp), bbhost's own test of it.
+add_executable(hd-stun-test EXCLUDE_FROM_ALL ../tests/test_hd_stun.cpp bbnet/hd/hd_stun.cpp)
+target_compile_options(hd-stun-test PRIVATE -UNDEBUG -Wall -Wextra)
+target_include_directories(hd-stun-test PRIVATE bbnet)
+# The whole backend without the game: two copies meet through tests/hd_mock_server.py
+# (python -m unittest test_hd_session, in tests/).
+add_executable(hd-session-test EXCLUDE_FROM_ALL ../tests/test_hd_session.cpp ${BBNET_HD_SOURCES})
+target_compile_options(hd-session-test PRIVATE -UNDEBUG -Wall -Wextra)
+target_include_directories(hd-session-test PRIVATE bbnet shadps4 third_party/httplib)
+target_compile_definitions(hd-session-test PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT CPPHTTPLIB_ZLIB_SUPPORT)
+target_link_libraries(hd-session-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::SSL
+    OpenSSL::Crypto ZLIB::ZLIB)
+if (WIN32)
+    target_compile_definitions(hd-session-test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(hd-session-test PRIVATE ws2_32 crypt32 bcrypt)
+endif()
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)
 target_compile_options(motion-history-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(motion-history-test PRIVATE ..)
